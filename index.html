@@ -7,8 +7,143 @@
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+  import { getFirestore, collection, getDocs, doc, setDoc, deleteDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+  import { getStorage, ref, uploadString, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-storage.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyD-LC4es8dCh0SJPY_fMzt3lo_WQEbbGQE",
+    authDomain: "art-visitas-d8425.firebaseapp.com",
+    projectId: "art-visitas-d8425",
+    storageBucket: "art-visitas-d8425.firebasestorage.app",
+    messagingSenderId: "361646245742",
+    appId: "1:361646245742:web:3601fbf2cffb274142237f"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+  const storage = getStorage(app);
+
+  // Cargar al iniciar — múltiples intentos para asegurar carga
+  const intentarCargar = (intentos) => {
+    if (intentos <= 0) return;
+    cargarInformesFirebase().then(() => {
+    }).catch(() => {
+      setTimeout(() => intentarCargar(intentos - 1), 2000);
+    });
+  };
+  
+  window.addEventListener('load', () => {
+    setTimeout(() => intentarCargar(3), 500);
+  });
+  window.addEventListener('focus', () => intentarCargar(1));
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) intentarCargar(1);
+  });
+
+  // ── SUBIR FOTO A STORAGE ──
+  window.subirFotoStorage = async (fotoBase64, informeId, fotoIndex) => {
+    try {
+      const fotoRef = ref(storage, `fotos/${informeId}/foto_${fotoIndex}.jpg`);
+      await uploadString(fotoRef, fotoBase64, 'data_url');
+      const url = await getDownloadURL(fotoRef);
+      return url;
+    } catch(e) {
+      console.error('Storage upload error:', e);
+      return null;
+    }
+  };
+
+  // ── GUARDAR EN FIREBASE — con fotos en Storage ──
+  window.guardarEnFirebase = async (informe) => {
+    try {
+      window._toast && window._toast('☁️ Subiendo fotos...');
+      
+      // Subir fotos a Storage
+      const fotosCloud = [];
+      if (informe.datos.fotos && informe.datos.fotos.length > 0) {
+        for (let i = 0; i < informe.datos.fotos.length; i++) {
+          const foto = informe.datos.fotos[i];
+          if (foto.src && foto.src.startsWith('data:')) {
+            const url = await window.subirFotoStorage(foto.src, informe.id, i);
+            fotosCloud.push({ src: url || foto.src, caption: foto.caption || '' });
+          } else {
+            fotosCloud.push(foto);
+          }
+        }
+      }
+
+      const informeCloud = {
+        ...informe,
+        datos: {
+          ...informe.datos,
+          fotos: fotosCloud,
+          firma: ''
+        },
+        sync: true
+      };
+      await setDoc(doc(db, 'informes_art', informe.id), informeCloud);
+      window._toast && window._toast('✅ Guardado en la nube');
+      return true;
+    } catch(e) {
+      console.error('Firebase save error:', e);
+      return false;
+    }
+  };
+
+  // ── CARGAR DE FIREBASE — todos los dispositivos ven todos ──
+  window.cargarInformesFirebase = async () => { // returns promise
+    try {
+      const q = query(collection(db, 'informes_art'), orderBy('creado', 'desc'));
+      const snap = await getDocs(q);
+      const remotos = [];
+      snap.forEach(d => remotos.push({...d.data(), id: d.id, sync: true}));
+
+      if (remotos.length === 0) return;
+
+      // Merge: remotos + locales
+      const locales = JSON.parse(localStorage.getItem('art_vt') || '[]');
+      
+      remotos.forEach(remoto => {
+        const local = locales.find(l => l.id === remoto.id);
+        if (local) {
+          local.sync = true;
+          // Usar fotos de la nube (URLs de Storage) si existen
+          const fotosCloud = remoto.datos.fotos && remoto.datos.fotos.length > 0 && 
+                             remoto.datos.fotos[0].src && remoto.datos.fotos[0].src.startsWith('http');
+          local.datos = {
+            ...remoto.datos,
+            fotos: fotosCloud ? remoto.datos.fotos : (local.datos.fotos || []),
+            firma: local.datos.firma || remoto.datos.firma || ''
+          };
+        } else {
+          // Informe nuevo desde otro dispositivo — usar fotos de Storage
+          locales.push({...remoto, sync: true});
+        }
+      });
+
+      // Ordenar por fecha de creación
+      locales.sort((a,b) => new Date(b.creado) - new Date(a.creado));
+
+      informes = locales;
+      localStorage.setItem('art_vt', JSON.stringify(informes));
+      renderLista();
+      window._toast && window._toast('☁️ Sincronizado con la nube');
+    } catch(e) {
+      console.error('Firebase load error:', e);
+    }
+  };
+
+  // ── ELIMINAR DE FIREBASE ──
+  window.eliminarDeFirebase = async (id) => {
+    try {
+      await deleteDoc(doc(db, 'informes_art', id));
+    } catch(e) {
+      console.error('Firebase delete error:', e);
+    }
+  };
+</script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 :root{
@@ -227,15 +362,15 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--dark);min
   font-size:17px;color:var(--black);font-weight:700;
   letter-spacing:0.3px;
 }
-.membrete-grid{display:grid;grid-template-columns:1fr 1fr;}
-.mem-field{padding:12px 16px;border-bottom:2px solid var(--border2);border-right:2px solid var(--border2);min-height:48px;}
+.membrete-grid{display:grid;grid-template-columns:1fr 1fr;} /* legacy */
+.mem-field{padding:12px 16px;border-bottom:2px solid var(--border2);border-right:2px solid var(--border2);min-height:56px;height:auto;}
 .mem-field:nth-child(even){border-right:none;}
 .mem-field.full{grid-column:1/-1;border-right:none;}
 .mem-field:last-child,.mem-field:nth-last-child(2){border-bottom:none;}
 .mem-label{font-size:10px;font-weight:800;color:var(--black);letter-spacing:1.2px;text-transform:uppercase;margin-bottom:6px;}
 .mem-input{width:100%;border:none;outline:none;font-family:'DM Sans',sans-serif;font-size:15px;color:var(--black);background:transparent;font-weight:400;}
 .mem-input::placeholder{color:var(--border);font-style:italic;}
-textarea.mem-input{resize:vertical;min-height:52px;line-height:1.5;width:100%;}
+textarea.mem-input{resize:none;min-height:52px;line-height:1.6;width:100%;overflow:hidden;}
 
 /* ── FORM ── */
 .form-group{margin-bottom:20px;}
@@ -328,6 +463,22 @@ textarea.form-control{resize:vertical;min-height:140px;line-height:1.7;}
 }
 .btn-maps-outline:hover{background:var(--light);}
 
+/* ── TABLA MEMBRETE ── */
+.mem-table{
+  width:100%;border-collapse:collapse;
+}
+.mem-cell{
+  padding:14px 16px;
+  border:2px solid var(--border2);
+  vertical-align:top;
+  min-height:56px;
+  width:50%;
+  word-wrap:break-word;
+}
+.mem-cell[colspan="2"]{width:100%;}
+.mem-cell .mem-input{width:100%;}
+.mem-cell textarea.mem-input{min-height:70px;resize:vertical;}
+
 /* ── FIRMA ── */
 .firma-wrap{
   border:2px solid var(--border);border-radius:10px;
@@ -379,7 +530,10 @@ textarea.form-control{resize:vertical;min-height:140px;line-height:1.7;}
 <body>
 
 <div class="offline-bar" id="offlineBar">
-  Sin conexión — Los cambios se guardan localmente
+  ⚠️ Sin conexión — Los cambios se guardan localmente y se sincronizarán cuando haya internet
+</div>
+<div class="online-bar" id="onlineBar" style="display:none;background:#2E7D32;color:white;padding:6px 24px;font-size:11px;font-weight:600;text-align:center;">
+  ✅ Conectado — Sincronizando con la nube...
 </div>
 
 <!-- HEADER -->
@@ -449,38 +603,51 @@ textarea.form-control{resize:vertical;min-height:140px;line-height:1.7;}
         </div>
         <div class="membrete-heading">INFORME TÉCNICO DE VISITA</div>
       </div>
-      <div class="membrete-grid">
-        <div class="mem-field full">
-          <div class="mem-label">Ciudad y Fecha</div>
-          <input class="mem-input" id="ciudad_fecha" type="text" placeholder="Ej: Bogotá D.C., miércoles 9 de abril de 2026">
-        </div>
-        <div class="mem-field full">
-          <div class="mem-label">Asunto</div>
-          <input class="mem-input" id="asunto" type="text" placeholder="Asunto del informe">
-        </div>
-        <div class="mem-field">
-          <div class="mem-label">Oficio de Solicitud</div>
-          <input class="mem-input" id="oficio_solicitud" type="text" placeholder="Número del oficio">
-        </div>
-        <div class="mem-field">
-          <div class="mem-label">Fecha de Solicitud</div>
-          <input class="mem-input" id="fecha_solicitud" type="date">
-        </div>
-        <div class="mem-field full">
-          <div class="mem-label">Dirección / Municipio</div>
-          <input class="mem-input" id="direccion" type="text" placeholder="Dirección o municipio visitado">
-        </div>
-        <div class="mem-field full">
-          <div class="mem-label">Objetivo</div>
-          <textarea class="mem-input" id="objetivo" placeholder="Objetivo de la visita técnica" rows="2"></textarea>
-        </div>
-        <div class="mem-field full">
-          <div class="mem-label">Solicitante</div>
-          <input class="mem-input" id="solicitante" type="text" placeholder="Nombre del solicitante o entidad">
-        </div>
+      <table class="mem-table">
+        <tr>
+          <td class="mem-cell" colspan="2">
+            <div class="mem-label">Ciudad y Fecha</div>
+            <input class="mem-input" id="ciudad_fecha" type="text" placeholder="Ej: Bogotá D.C., jueves 10 de abril de 2026">
+          </td>
+        </tr>
+        <tr>
+          <td class="mem-cell" colspan="2">
+            <div class="mem-label">Asunto</div>
+            <textarea class="mem-input" id="asunto" placeholder="Asunto del informe" rows="2"></textarea>
+          </td>
+        </tr>
+        <tr>
+          <td class="mem-cell">
+            <div class="mem-label">Oficio de Solicitud</div>
+            <input class="mem-input" id="oficio_solicitud" type="text" placeholder="Número del oficio">
+          </td>
+          <td class="mem-cell">
+            <div class="mem-label">Fecha de Solicitud</div>
+            <input class="mem-input" id="fecha_solicitud" type="date">
+          </td>
+        </tr>
+        <tr>
+          <td class="mem-cell" colspan="2">
+            <div class="mem-label">Dirección Regional</div>
+            <input class="mem-input" id="direccion" type="text" placeholder="Dirección Regional Bajo Cauca Norte y Nordeste">
+          </td>
+        </tr>
+        <tr>
+          <td class="mem-cell" colspan="2">
+            <div class="mem-label">Objetivo</div>
+            <textarea class="mem-input" id="objetivo" placeholder="Objetivo de la visita técnica" rows="3"></textarea>
+          </td>
+        </tr>
+        <tr>
+          <td class="mem-cell" colspan="2">
+            <div class="mem-label">Solicitante</div>
+            <input class="mem-input" id="solicitante" type="text" placeholder="Nombre del solicitante o entidad">
+          </td>
+        </tr>
+      </table>
       </div>
-    </div>
-    <div class="nav-bottom">
+
+      <div class="nav-bottom">
       <span></span>
       <button class="btn btn-dark" onclick="nextTab('motivo')">Continuar →</button>
     </div>
@@ -565,9 +732,16 @@ textarea.form-control{resize:vertical;min-height:140px;line-height:1.7;}
         <input type="text" class="form-control" id="proj_lat" placeholder="Latitud  Ej: 8.0922">
         <input type="text" class="form-control" id="proj_lng" placeholder="Longitud  Ej: -76.7312">
       </div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">
-        <button class="btn-maps" onclick="verEnMapa()">📍 Ver en Google Maps</button>
-        <button class="btn-maps btn-maps-outline" onclick="cargarMapa()">🗺️ Cargar mapa aquí</button>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:center;">
+        <button class="btn-maps" onclick="cargarMapa()">🗺️ Cargar mapa aquí</button>
+        <select id="mapZoom" class="form-control" style="width:auto;padding:10px 14px;" onchange="cargarMapa()">
+          <option value="10">Zoom — Regional</option>
+          <option value="12">Zoom — Municipal</option>
+          <option value="14">Zoom — Vereda</option>
+          <option value="15" selected>Zoom — Sector</option>
+          <option value="17">Zoom — Predio</option>
+          <option value="19">Zoom — Detalle</option>
+        </select>
       </div>
       <div class="map-frame" id="mapFrame">
         <div class="map-placeholder" id="mapPlaceholder">
@@ -575,8 +749,12 @@ textarea.form-control{resize:vertical;min-height:140px;line-height:1.7;}
           <div style="font-size:13px;font-weight:600;color:var(--dark);">Ingresa las coordenadas y carga el mapa</div>
           <div style="font-size:12px;">Clic en "Cargar mapa aquí"</div>
         </div>
-        <div id="leafletMap" style="display:none;width:100%;height:400px;"></div>
-        <img id="mapImg" style="display:none;width:100%;height:400px;object-fit:cover;border-radius:10px;" alt="Mapa">
+        <iframe id="mapIframe" 
+          style="display:none;width:100%;height:400px;border:none;border-radius:10px;" 
+          allowfullscreen="" 
+          loading="lazy"
+          referrerpolicy="no-referrer-when-downgrade">
+        </iframe>
       </div>
     </div>
 
@@ -776,6 +954,30 @@ function setDatos(d) {
   ids.forEach(id => { const el = document.getElementById(id); if(el) el.value = d[id]||''; });
   fotos = d.fotos || [];
   renderFotos();
+  // Restaurar firma
+  if (d.firma && d.firma !== 'data:,') {
+    setTimeout(() => {
+      const canvas = document.getElementById('firmaCanvas');
+      if (canvas) {
+        if (!fCtx) initFirma();
+        const img = new Image();
+        img.onload = () => { fCtx.clearRect(0,0,560,140); fCtx.drawImage(img,0,0); };
+        img.src = d.firma;
+      }
+    }, 300);
+  }
+  // Restaurar mapa
+  if (d.proj_lat && d.proj_lng) {
+    setTimeout(() => {
+      const iframe = document.getElementById('mapIframe');
+      const placeholder = document.getElementById('mapPlaceholder');
+      if (iframe && placeholder) {
+        iframe.src = `https://maps.google.com/maps?q=${d.proj_lat},${d.proj_lng}&z=15&output=embed&hl=es`;
+        iframe.style.display = 'block';
+        placeholder.style.display = 'none';
+      }
+    }, 500);
+  }
 }
 
 // ══ SAVE ══
@@ -784,9 +986,25 @@ function autoSave() {
   current.datos = getDatos();
   current.titulo = current.datos.asunto || current.datos.municipio || 'Sin título';
   current.mod = new Date().toISOString();
+  current.sync = false;
   const idx = informes.findIndex(i => i.id === current.id);
   if (idx >= 0) informes[idx] = current; else informes.unshift(current);
-  localStorage.setItem('art_vt', JSON.stringify(informes));
+  try {
+    localStorage.setItem('art_vt', JSON.stringify(informes));
+  } catch(e) {
+    toast('⚠️ Espacio local lleno');
+  }
+  // Guardar en Firebase si hay conexión
+  if (navigator.onLine && window.guardarEnFirebase) {
+    window.guardarEnFirebase(current).then(ok => {
+      if (ok) {
+        current.sync = true;
+        const idx2 = informes.findIndex(i => i.id === current.id);
+        if (idx2 >= 0) informes[idx2] = current;
+        localStorage.setItem('art_vt', JSON.stringify(informes));
+      }
+    });
+  }
 }
 
 function guardarInforme() {
@@ -840,6 +1058,7 @@ function eliminar(id) {
   localStorage.setItem('art_vt', JSON.stringify(informes));
   renderLista();
   toast('Informe eliminado');
+  if (window.eliminarDeFirebase) window.eliminarDeFirebase(id);
 }
 
 function syncPending() {
@@ -900,7 +1119,8 @@ function limpiarFirma() {
 }
 
 // ══ PDF ══
-function exportarPDF() {
+async function exportarPDF() {
+  toast("⏳ Generando PDF...");
   const {jsPDF} = window.jspdf;
   const doc = new jsPDF('p','mm','a4');
   const d = getDatos();
@@ -985,21 +1205,107 @@ function exportarPDF() {
   blk([d.departamento?'Departamento: '+d.departamento:'', d.municipio?'Municipio: '+d.municipio:'', d.vereda?'Vereda: '+d.vereda:'', d.coordenadas?'Coordenadas: '+d.coordenadas:''].filter(Boolean).join('   '));
   blk(d.localizacion);
   sec('4. LOCALIZACIÓN DEL PROYECTO');
-  if(d.proj_lat||d.proj_lng) blk('Coordenadas: ' + (d.proj_lat||'') + ', ' + (d.proj_lng||''));
   blk(d.loc_proyecto_desc);
+  if (d.proj_lat || d.proj_lng) {
+    // Coordenadas
+    const boxH = 14;
+    doc.setFillColor(245,246,248);
+    doc.setDrawColor(180,185,195);
+    doc.setLineWidth(0.3);
+    doc.rect(M, y, CW, boxH, 'FD');
+    doc.setFontSize(7.5); doc.setFont('helvetica','bold'); doc.setTextColor(80,90,100);
+    doc.text('COORDENADAS GPS:', M+3, y+5.5);
+    doc.setFont('helvetica','normal'); doc.setTextColor(28,30,33);
+    doc.text('Lat: ' + (d.proj_lat||'') + '   Lon: ' + (d.proj_lng||''), M+38, y+5.5);
+    const mapUrl = 'https://maps.google.com/?q=' + d.proj_lat + ',' + d.proj_lng;
+    doc.setTextColor(0,80,180); doc.setFontSize(7);
+    doc.textWithLink('Ver en Google Maps →', M+3, y+11, {url: mapUrl});
+    y += boxH + 4;
+
+    // Imagen del mapa via Google Static Maps API con zoom guardado
+    const mapZoom = window._mapZoomActual || 15;
+    const staticMapUrl = 'https://maps.googleapis.com/maps/api/staticmap?center=' + d.proj_lat + ',' + d.proj_lng + '&zoom=' + mapZoom + '&size=640x400&scale=2&maptype=roadmap&markers=color:red%7Clabel:P%7C' + d.proj_lat + ',' + d.proj_lng + '&key=AIzaSyBTWLJV7JIbnSTsKWKEsNE8FGqKBjujRE8';
+    
+    if (y > 180) { doc.addPage(); addHeader(); y = 44; }
+    
+    // Cargar imagen del mapa
+    await new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = function() {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const imgData = canvas.toDataURL('image/jpeg', 0.85);
+        const mH = CW * 0.5;
+        doc.addImage(imgData, 'JPEG', M, y, CW, mH);
+        
+        // Borde del mapa
+        doc.setDrawColor(200,205,213); doc.setLineWidth(0.3);
+        doc.rect(M, y, CW, mH);
+        y += mH + 6;
+        resolve();
+      };
+      img.onerror = function() {
+        // Si falla mostrar mensaje
+        doc.setFontSize(8); doc.setTextColor(120,120,120);
+        doc.text('Mapa no disponible - Ver coordenadas arriba', W/2, y+10, {align:'center'});
+        y += 16;
+        resolve();
+      };
+      img.src = staticMapUrl;
+    });
+  }
   sec('5. METODOLOGÍA'); blk(d.metodologia);
   sec('6. DESCRIPCIÓN GENERAL DE LA VISITA'); blk(d.descripcion);
   sec('7. REGISTRO FOTOGRÁFICO');
   if (fotos.length) {
+    // Convertir fotos URL a base64 para jsPDF
     const fW = (CW-6)/2;
-    fotos.forEach((f,i) => {
+    for (let i = 0; i < fotos.length; i++) {
+      const f = fotos[i];
       if (y > 230) { doc.addPage(); addHeader(); y = 44; }
       const x = M + (i%2)*(fW+6);
-      try { doc.addImage(f.src,'JPEG',x,y,fW,fW*0.7); } catch(e){}
-      if (f.caption) { doc.setFontSize(7); doc.text(f.caption,x,y+fW*0.7+3); }
-      if (i%2===1) y += fW*0.7 + 8;
-    });
-    if (fotos.length%2!==0) y += (CW/2)*0.7 + 8;
+      try {
+        let imgSrc = f.src;
+        // Si es URL de Firebase Storage, convertir a base64
+        if (imgSrc && imgSrc.startsWith('http')) {
+          imgSrc = await new Promise((resolve) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => {
+              const canvas = document.createElement('canvas');
+              canvas.width = img.width;
+              canvas.height = img.height;
+              canvas.getContext('2d').drawImage(img, 0, 0);
+              resolve(canvas.toDataURL('image/jpeg', 0.8));
+            };
+            img.onerror = () => resolve(null);
+            img.src = imgSrc + '&t=' + Date.now(); // evitar cache
+          });
+        }
+        if (imgSrc) {
+          doc.addImage(imgSrc, 'JPEG', x, y, fW, fW*0.7);
+        }
+      } catch(e) {
+        // Si falla la imagen mostrar placeholder
+        doc.setFillColor(240,240,240);
+        doc.rect(x, y, fW, fW*0.7, 'F');
+        doc.setFontSize(7); doc.setTextColor(150);
+        doc.text('Foto no disponible', x + fW/2, y + fW*0.35, {align:'center'});
+        doc.setTextColor(28,30,33);
+      }
+      if (f.caption) {
+        doc.setFontSize(7.5);
+        doc.setTextColor(60,70,80);
+        doc.text(f.caption, x, y + fW*0.7 + 4);
+        doc.setTextColor(28,30,33);
+      }
+      if (i%2===1) y += fW*0.7 + 10;
+    }
+    if (fotos.length%2!==0) y += (CW/2)*0.7 + 10;
   }
   sec('8. CONCLUSIONES, OBSERVACIONES Y RECOMENDACIONES');
   if (d.conclusiones) { doc.setFontSize(8.5); doc.setFont('helvetica','bold'); doc.text('La visita permite concluir que:', M+2, y); y+=5; doc.setFont('helvetica','normal'); doc.setFontSize(9); blk(d.conclusiones); }
@@ -1101,119 +1407,26 @@ function verEnMapa() {
   window.open(url, '_blank');
 }
 
-let leafletMap = null;
-let leafletMarker = null;
+let _mapZoomActual = 15;
 
 function cargarMapa() {
-  const latVal = document.getElementById('proj_lat').value.trim();
-  const lngVal = document.getElementById('proj_lng').value.trim();
-  const lat = parseFloat(latVal);
-  const lng = parseFloat(lngVal);
+  const lat = document.getElementById('proj_lat').value.trim();
+  const lng = document.getElementById('proj_lng').value.trim();
+  if (!lat || !lng) { toast('Ingresa latitud y longitud primero'); return; }
   
-  if (!latVal || !lngVal || isNaN(lat) || isNaN(lng)) {
-    toast('Ingresa latitud y longitud válidas');
-    return;
-  }
-
-  document.getElementById('mapPlaceholder').style.display = 'none';
-
-  // Intento 1: Leaflet interactivo
-  try {
-    const mapDiv = document.getElementById('leafletMap');
-    mapDiv.style.display = 'block';
-    document.getElementById('mapImg').style.display = 'none';
-
-    if (!leafletMap) {
-      leafletMap = L.map('leafletMap', {
-        center: [lat, lng],
-        zoom: 15,
-        zoomControl: true
-      });
-
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap',
-        maxZoom: 19,
-        crossOrigin: true
-      }).addTo(leafletMap);
-
-      // Fallback tiles si falla el primero
-      leafletMap.on('tileerror', function() {
-        usarMapaEstatico(lat, lng);
-      });
-
-      const icon = L.divIcon({
-        html: `<div style="background:#1C1E21;width:28px;height:28px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.4);"></div>`,
-        iconSize: [28, 28],
-        iconAnchor: [14, 28],
-        className: ''
-      });
-
-      leafletMarker = L.marker([lat, lng], {icon})
-        .addTo(leafletMap)
-        .bindPopup(`<b style="font-family:sans-serif">📍 Proyecto</b><br>
-          <span style="font-family:monospace;font-size:11px">${lat}, ${lng}</span>`)
-        .openPopup();
-
-    } else {
-      leafletMap.setView([lat, lng], 15);
-      leafletMarker.setLatLng([lat, lng]).openPopup();
-      setTimeout(() => leafletMap.invalidateSize(), 200);
-    }
-
-    toast('✅ Mapa cargado');
-
-    // Verificar si los tiles cargaron después de 3 segundos
-    setTimeout(() => {
-      const mapContainer = document.getElementById('leafletMap');
-      const canvas = mapContainer.querySelector('canvas');
-      const tiles = mapContainer.querySelectorAll('.leaflet-tile-loaded');
-      if (tiles.length === 0) {
-        usarMapaEstatico(lat, lng);
-      }
-    }, 3000);
-
-  } catch(e) {
-    usarMapaEstatico(lat, lng);
-  }
-}
-
-function usarMapaEstatico(lat, lng) {
-  // Fallback: imagen estática via OpenStreetMap staticmap
-  document.getElementById('leafletMap').style.display = 'none';
-  const img = document.getElementById('mapImg');
+  const zoomSelect = document.getElementById('mapZoom');
+  _mapZoomActual = zoomSelect ? parseInt(zoomSelect.value) : 15;
   
-  // Usar un servicio de mapa estático que siempre funciona
-  // StaticMap via geoapify (gratuito sin key para uso básico)
-  const zoom = 15;
-  const w = 800, h = 400;
-  
-  // Intentar con staticmap.net (gratuito)
-  img.src = `https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lng}&zoom=${zoom}&size=${w}x${h}&markers=${lat},${lng},red-pushpin`;
-  img.style.display = 'block';
-  
-  img.onerror = () => {
-    // Último fallback: mostrar enlace directo
-    img.style.display = 'none';
-    const frame = document.getElementById('mapFrame');
-    frame.innerHTML = `
-      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:12px;padding:20px;text-align:center;">
-        <div style="font-size:40px;">📍</div>
-        <div style="font-weight:700;font-size:15px;">Coordenadas registradas</div>
-        <div style="font-family:monospace;font-size:13px;background:#f0f0f0;padding:8px 16px;border-radius:6px;">${lat}, ${lng}</div>
-        <a href="https://www.google.com/maps?q=${lat},${lng}" target="_blank" 
-           style="background:#1C1E21;color:white;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px;">
-          📍 Ver en Google Maps
-        </a>
-        <a href="https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}&zoom=15" target="_blank"
-           style="background:transparent;color:#1C1E21;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px;border:2px solid #B8BCC5;">
-          🗺️ Ver en OpenStreetMap
-        </a>
-      </div>`;
-  };
-  toast('Mostrando ubicación en mapa');
+  const iframe = document.getElementById('mapIframe');
+  const placeholder = document.getElementById('mapPlaceholder');
+  iframe.src = `https://maps.google.com/maps?q=${lat},${lng}&z=${_mapZoomActual}&output=embed&hl=es`;
+  iframe.style.display = 'block';
+  placeholder.style.display = 'none';
+  toast('✅ Mapa cargado — Zoom ' + _mapZoomActual);
 }
 
 // ══ TOAST ══
+window._toast = (msg) => toast(msg);
 function toast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -1222,7 +1435,16 @@ function toast(msg) {
 }
 
 // ══ INIT ══
-window.addEventListener('load', () => { renderLista(); });
+window.addEventListener('load', () => { 
+  renderLista(); 
+  // Auto-resize textareas
+  document.querySelectorAll('textarea.mem-input').forEach(ta => {
+    ta.addEventListener('input', function() {
+      this.style.height = 'auto';
+      this.style.height = this.scrollHeight + 'px';
+    });
+  });
+});
 </script>
 </body>
 </html>
